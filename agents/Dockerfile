@@ -34,5 +34,4 @@ RUN groupadd -g ${GID} runner 2>/dev/null || true \
 WORKDIR /workspace
 USER runner
 
-# Default entrypoint executes eval_agent.py with any passed arguments
-ENTRYPOINT ["python3", "agents/eval_agent.py"]
+CMD ["/bin/bash"]

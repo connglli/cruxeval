@@ -141,16 +141,17 @@ def run_agent(
   agent: str,
   model: str,
   timeout: int = 300,
+  docker_image: str = "cruxeval-agent:latest",
 ) -> int:
   """
-  Executes an AI coding agent (OpenCode or Claude Code) in the given workspace,
-  piping stdout directly to traj.jsonl and stderr to error.txt.
+  Executes an AI coding agent (OpenCode or Claude Code) in an isolated Docker container
+  mounting ONLY the workspace directory. Pipes stdout directly to traj.jsonl and stderr to error.txt.
   Returns exit_code.
   """
   env = os.environ.copy()
 
   if agent == "opencode":
-    cmd = [
+    agent_cmd = [
       "opencode",
       "run",
       prompt,
@@ -161,7 +162,7 @@ def run_agent(
       "json",
     ]
   elif agent == "claude":
-    cmd = [
+    agent_cmd = [
       "claude",
       "--print",
       "--verbose",
@@ -179,6 +180,25 @@ def run_agent(
     env["CLAUDE_CODE_SUBAGENT_MODEL"] = model
   else:
     raise ValueError(f"Unsupported agent '{agent}'. Choose 'opencode' or 'claude'.")
+
+  cmd = [
+    "docker",
+    "run",
+    "--rm",
+    "-e",
+    "PYTHONUNBUFFERED=1",
+    "-v",
+    f"{workspace.resolve()}:/workspace",
+    "-w",
+    "/workspace",
+  ]
+
+  # Forward all environment variables present in eval_agent's environment
+  for key, val in env.items():
+    cmd.extend(["-e", f"{key}={val}"])
+
+  cmd.append(docker_image)
+  cmd.extend(agent_cmd)
 
   traj_path = workspace / "traj.jsonl"
   error_path = workspace / "error.txt"
@@ -203,8 +223,9 @@ def run_agent(
         append_err.write(f"\n{agent} timed out after {timeout}s\n")
       raise TimeoutError(f"{agent} timed out after {timeout}s in {workspace}")
     except FileNotFoundError:
+      executable = cmd[0]
       raise RuntimeError(
-        f"Agent executable '{agent}' not found. Please ensure {agent} is installed."
+        f"Executable '{executable}' not found. Please ensure Docker is installed and in PATH."
       )
 
 
@@ -264,6 +285,7 @@ def evaluate_task(
   model: str,
   workspace: Path,
   timeout: int,
+  docker_image: str = "cruxeval-agent:latest",
   verbose: bool = False,
 ) -> dict[str, any]:
   """Runs a single task with an agent (OpenCode or Claude) in its workspace and evaluates result."""
@@ -303,6 +325,7 @@ def evaluate_task(
       agent=agent,
       model=model,
       timeout=timeout,
+      docker_image=docker_image,
     )
 
     answer_file_path = workspace / "answer.py"
@@ -395,6 +418,12 @@ def main():
     help="Output directory to store sample directories and result.json (default: agents/output)",
   )
   parser.add_argument(
+    "--docker-image",
+    type=str,
+    default="cruxeval-agent:latest",
+    help="Docker image for isolated task execution (default: cruxeval-agent:latest)",
+  )
+  parser.add_argument(
     "--verbose",
     "-v",
     action="store_true",
@@ -432,6 +461,7 @@ def main():
   )
   print(f"   Agent        : {args.agent}")
   print(f"   Model        : {model}")
+  print(f"   Docker Image : {args.docker_image}")
   print(f"   Tasks        : {total_tasks} samples")
   print(f"   Workers      : {args.num_workers} parallel workers")
   print(f"   Timeout      : {args.timeout}s per task")
@@ -456,6 +486,7 @@ def main():
           model=model,
           workspace=outdir / sample["id"],
           timeout=args.timeout,
+          docker_image=args.docker_image,
           verbose=args.verbose,
         ): sample
         for sample in samples
@@ -491,6 +522,7 @@ def main():
         model=model,
         workspace=outdir / sample["id"],
         timeout=args.timeout,
+        docker_image=args.docker_image,
         verbose=args.verbose,
       )
       results.append(res)

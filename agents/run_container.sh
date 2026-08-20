@@ -53,7 +53,7 @@ for var in "${CANDIDATE_VARS[@]}"; do
   fi
 done
 
-ENV_FLAGS=()
+UNSET_ENV_ARGS=()
 if [[ ${#FOUND_VARS[@]} -gt 0 ]]; then
   echo "🔍 Detected the following environment variable(s) on host:"
   for var in "${FOUND_VARS[@]}"; do
@@ -63,24 +63,18 @@ if [[ ${#FOUND_VARS[@]} -gt 0 ]]; then
 
   read -r -p "Do you want to pass these environment variable(s) to the container? [y/N]: " user_choice
   if [[ "${user_choice,,}" =~ ^(y|yes)$ ]]; then
-    echo "🔑 Passing detected environment variables to container..."
-    for var in "${FOUND_VARS[@]}"; do
-      ENV_FLAGS+=("-e" "${var}=${!var}")
-    done
+    echo "🔑 Passing detected environment variables to eval_agent..."
   else
-    echo "🔒 Host environment variables will NOT be passed to the container."
+    echo "🔒 Host environment variables will NOT be passed to eval_agent."
+    for var in "${FOUND_VARS[@]}"; do
+      UNSET_ENV_ARGS+=("-u" "${var}")
+    done
   fi
 else
   echo "ℹ️  No provider environment variables detected on host."
 fi
 
-echo "🚀 Launching container '${IMAGE_NAME}'..."
-
-docker run --rm -it \
-  -e PYTHONUNBUFFERED=1 \
-  --user "$(id -u):$(id -g)" \
-  -v "${REPO_ROOT}:/workspace" \
-  -w /workspace \
-  "${ENV_FLAGS[@]}" \
-  "${IMAGE_NAME}" \
-  "${FORWARD_ARGS[@]}"
+echo "🚀 Starting CRUXEval evaluation with isolated Docker containers per task..."
+env "${UNSET_ENV_ARGS[@]}" python3 "${REPO_ROOT}/agents/eval_agent.py" \
+  "${FORWARD_ARGS[@]}" \
+  --docker-image "${IMAGE_NAME}"
