@@ -1,25 +1,41 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# run_container.sh — Build and run agent benchmark in a dedicated Docker image
+# run_eval.sh - Build and run agent benchmark in isolated Docker containers
 # ==============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Check if Docker is installed
+if ! command -v docker >/dev/null 2>&1; then
+  echo "❌ Error: Docker is not installed or not found in PATH." >&2
+  echo "Please install Docker to run agent evaluations in isolated containers." >&2
+  exit 1
+fi
+
 IMAGE_NAME="${IMAGE_NAME:-cruxeval-agent:latest}"
 DOCKERFILE="${SCRIPT_DIR}/Dockerfile"
 
-# Check for --rebuild flag
+# Check for -h / --help or --rebuild flags
 REBUILD=0
 FORWARD_ARGS=()
 for arg in "$@"; do
-  if [[ "$arg" == "--rebuild" ]]; then
+  if [[ "$arg" == "-h" || "$arg" == "--help" ]]; then
+    python3 "${REPO_ROOT}/agents/eval_agent.py" --help
+    exit 0
+  elif [[ "$arg" == "--rebuild" ]]; then
     REBUILD=1
   else
     FORWARD_ARGS+=("$arg")
   fi
 done
+
+# If no arguments provided, display help
+if [[ ${#FORWARD_ARGS[@]} -eq 0 ]]; then
+  python3 "${REPO_ROOT}/agents/eval_agent.py" --help
+  exit 0
+fi
 
 # Build Docker image if not present or if --rebuild specified
 if [[ "$REBUILD" -eq 1 ]] || ! docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
