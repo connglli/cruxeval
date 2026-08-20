@@ -1,13 +1,38 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# run_container.sh — Run OpenCode benchmark inside default ubuntu:24.04 container
+# run_container.sh — Build and run OpenCode in a dedicated Docker image
 # ==============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-UBUNTU_IMAGE="${UBUNTU_IMAGE:-ubuntu:24.04}"
+IMAGE_NAME="${IMAGE_NAME:-cruxeval-opencode:latest}"
+DOCKERFILE="${SCRIPT_DIR}/Dockerfile"
+
+# Check for --rebuild flag
+REBUILD=0
+FORWARD_ARGS=()
+for arg in "$@"; do
+  if [[ "$arg" == "--rebuild" ]]; then
+    REBUILD=1
+  else
+    FORWARD_ARGS+=("$arg")
+  fi
+done
+
+# Build Docker image if not present or if --rebuild specified
+if [[ "$REBUILD" -eq 1 ]] || ! docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
+  echo "📦 Building Docker image '${IMAGE_NAME}' (Ubuntu 24.04 + OpenCode)..."
+  docker build \
+    -t "${IMAGE_NAME}" \
+    --build-arg UID="$(id -u)" \
+    --build-arg GID="$(id -g)" \
+    -f "${DOCKERFILE}" \
+    "${SCRIPT_DIR}"
+  echo "✅ Docker image built successfully."
+  echo ""
+fi
 
 # Detect relevant host environment variables (API keys and OpenCode settings)
 CANDIDATE_VARS=(
@@ -49,19 +74,12 @@ else
   echo "ℹ️  No provider environment variables detected on host."
 fi
 
-echo "🚀 Launching container with ${UBUNTU_IMAGE}..."
+echo "🚀 Launching container '${IMAGE_NAME}'..."
 
 docker run --rm -i \
+  --user "$(id -u):$(id -g)" \
   -v "${REPO_ROOT}:/workspace" \
   -w /workspace \
   "${ENV_FLAGS[@]}" \
-  "${UBUNTU_IMAGE}" \
-  bash -c '
-    set -euo pipefail
-    echo "📦 Installing Python, Node.js, and OpenCode (npm install -g opencode-ai)..."
-    apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-      python3 nodejs npm ca-certificates curl
-    npm install -g opencode-ai
-    echo "✅ OpenCode installed. Running benchmark..."
-    python3 codokus/run_opencode.py "$@"
-  ' -- "$@"
+  "${IMAGE_NAME}" \
+  "${FORWARD_ARGS[@]}"
