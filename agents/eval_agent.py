@@ -293,6 +293,26 @@ def evaluate_task(
 ) -> dict[str, Any]:
   """Runs a single task with an agent (OpenCode or Claude) in its workspace and evaluates result."""
   sample_id = sample["id"]
+  sample_result_file = workspace / "result.json"
+
+  # Resume from previous execution if sample result.json already exists
+  if sample_result_file.exists():
+    try:
+      with open(sample_result_file, "r", encoding="utf-8") as f:
+        cached_result = json.load(f)
+      if verbose:
+        status = "✅ PASS" if cached_result.get("correct") else "❌ FAIL"
+        content_preview = (
+          cached_result.get("answer") or cached_result.get("error") or ""
+        )[:60]
+        print(
+          f"[{sample_id}] ⏩ RESUMED {status} ({cached_result.get('elapsed', 0.0)}s) | answer.py: {content_preview}",
+          flush=True,
+        )
+      return cached_result
+    except Exception:
+      pass  # Corrupt or incomplete, re-run
+
   code = sample["code"]
   input_val = sample.get("input", "")
   output_val = sample.get("output", "")
@@ -352,6 +372,10 @@ def evaluate_task(
 
   finally:
     result["elapsed"] = round(time.perf_counter() - start_time, 2)
+    # Save per-sample result.json
+    with open(sample_result_file, "w", encoding="utf-8") as f:
+      json.dump(result, f, indent=2)
+
     if verbose:
       status = "✅ PASS" if result["correct"] else "❌ FAIL"
       content_preview = (result["answer"] or result["error"] or "")[:60]
@@ -490,6 +514,8 @@ def main():
     ) as executor:
       future_to_sample = {}
       for idx, sample in enumerate(samples):
+        sample_res_file = outdir / sample["id"] / "result.json"
+        is_cached = sample_res_file.exists()
         future = executor.submit(
           evaluate_task,
           sample=sample,
@@ -502,7 +528,7 @@ def main():
           verbose=args.verbose,
         )
         future_to_sample[future] = sample
-        if args.throttle > 0 and idx < total_tasks - 1:
+        if args.throttle > 0 and not is_cached and idx < total_tasks - 1:
           time.sleep(args.throttle)
 
       for i, future in enumerate(
@@ -528,6 +554,8 @@ def main():
           )
   else:
     for i, sample in enumerate(samples, start=1):
+      sample_res_file = outdir / sample["id"] / "result.json"
+      is_cached = sample_res_file.exists()
       res = evaluate_task(
         sample=sample,
         mode=args.mode,
@@ -556,7 +584,7 @@ def main():
           flush=True,
         )
 
-      if args.throttle > 0 and i < total_tasks:
+      if args.throttle > 0 and not is_cached and i < total_tasks:
         time.sleep(args.throttle)
 
   print("\n" + "=" * 70)
@@ -578,7 +606,7 @@ def main():
   print(f"   ⏱️ Avg Elapsed    : {avg_elapsed:.2f}s")
   print("=" * 70)
 
-  # Save summary and results JSON
+  # Save summary JSON (individual task results are stored in each sample's result.json)
   output_file = outdir / "result.json"
 
   summary = {
@@ -594,7 +622,6 @@ def main():
     },
     "pass_rate": round(final_pass_rate, 2),
     "avg_elapsed": avg_elapsed,
-    "results": sorted(results, key=lambda x: x["id"]),
   }
 
   with open(output_file, "w", encoding="utf-8") as f:
