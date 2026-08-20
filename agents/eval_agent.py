@@ -424,6 +424,12 @@ def main():
     help="Docker image for isolated task execution (default: cruxeval-agent:latest)",
   )
   parser.add_argument(
+    "--throttle",
+    type=float,
+    default=0.0,
+    help="Delay in seconds to sleep before launching the next task (default: 0.0s)",
+  )
+  parser.add_argument(
     "--verbose",
     "-v",
     action="store_true",
@@ -465,6 +471,8 @@ def main():
   print(f"   Tasks        : {total_tasks} samples")
   print(f"   Workers      : {args.num_workers} parallel workers")
   print(f"   Timeout      : {args.timeout}s per task")
+  if args.throttle > 0:
+    print(f"   Throttle     : {args.throttle}s delay between launches")
   print(f"   Outdir       : {outdir}")
   print("=" * 70)
 
@@ -477,8 +485,9 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(
       max_workers=args.num_workers
     ) as executor:
-      future_to_sample = {
-        executor.submit(
+      future_to_sample = {}
+      for idx, sample in enumerate(samples):
+        future = executor.submit(
           evaluate_task,
           sample=sample,
           mode=args.mode,
@@ -488,9 +497,10 @@ def main():
           timeout=args.timeout,
           docker_image=args.docker_image,
           verbose=args.verbose,
-        ): sample
-        for sample in samples
-      }
+        )
+        future_to_sample[future] = sample
+        if args.throttle > 0 and idx < total_tasks - 1:
+          time.sleep(args.throttle)
 
       for i, future in enumerate(
         concurrent.futures.as_completed(future_to_sample), start=1
@@ -542,6 +552,9 @@ def main():
           end="\r",
           flush=True,
         )
+
+      if args.throttle > 0 and i < total_tasks:
+        time.sleep(args.throttle)
 
   print("\n" + "=" * 70)
   final_pass_rate = (passed / total_tasks * 100) if total_tasks > 0 else 0.0
