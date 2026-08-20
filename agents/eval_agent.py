@@ -138,6 +138,52 @@ Instructions:
     raise ValueError(f"Unknown mode: {mode}")
 
 
+def is_allowed_env_var(key: str) -> bool:
+  """Selectively determines if an environment variable should be passed into the container."""
+  key_upper = key.upper()
+  exact_keys = {
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "DEEPSEEK_API_KEY",
+    "DEEPSEEK_BASE_URL",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENCODE_API_KEY",
+    "OPENCODE_MODEL",
+    "OPENCODE_BASE_URL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "TAVILY_API_KEY",
+  }
+  if key_upper in exact_keys:
+    return True
+
+  allowed_prefixes = (
+    "OPENCODE_",
+    "ANTHROPIC_",
+    "OPENAI_",
+    "DEEPSEEK_",
+    "OPENROUTER_",
+    "GEMINI_",
+    "CLAUDE_",
+  )
+  if key_upper.startswith(allowed_prefixes):
+    return True
+
+  allowed_suffixes = ("_API_KEY", "_BASE_URL")
+  if key_upper.endswith(allowed_suffixes):
+    return True
+
+  return False
+
+
 def run_agent(
   prompt: str,
   workspace: Path,
@@ -196,9 +242,10 @@ def run_agent(
     "/workspace",
   ]
 
-  # Forward all environment variables present in eval_agent's environment
+  # Selectively forward only provider keys, model configs, and agent settings
   for key, val in env.items():
-    cmd.extend(["-e", f"{key}={val}"])
+    if is_allowed_env_var(key):
+      cmd.extend(["-e", f"{key}={val}"])
 
   cmd.append(docker_image)
   cmd.extend(agent_cmd)
