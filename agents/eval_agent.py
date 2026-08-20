@@ -387,6 +387,40 @@ def evaluate_task(
   return result
 
 
+def parse_throttle(throttle_str: str | None) -> tuple[int, float] | None:
+  """
+  Parses throttle specification 'num:seconds' (e.g. '5:10' for 10s after every 5 tasks).
+  Also supports single number 'seconds' as '1:seconds'.
+  Returns (interval: int, delay: float) or None if disabled.
+  """
+  if not throttle_str:
+    return None
+
+  throttle_str = str(throttle_str).strip()
+  if ":" in throttle_str:
+    parts = throttle_str.split(":", 1)
+    try:
+      interval = int(parts[0].strip())
+      delay = float(parts[1].strip())
+      if interval <= 0 or delay <= 0:
+        return None
+      return interval, delay
+    except ValueError:
+      raise argparse.ArgumentTypeError(
+        f"Invalid throttle format '{throttle_str}'. Expected 'num:seconds' (e.g. '5:10' or '1:2.5')."
+      )
+  else:
+    try:
+      delay = float(throttle_str)
+      if delay <= 0:
+        return None
+      return 1, delay
+    except ValueError:
+      raise argparse.ArgumentTypeError(
+        f"Invalid throttle format '{throttle_str}'. Expected 'num:seconds' (e.g. '5:10' or '1:2.5')."
+      )
+
+
 def main():
   parser = argparse.ArgumentParser(
     description="Self-contained AI agent evaluation on CRUXEval (OpenCode & Claude Code)"
@@ -452,9 +486,9 @@ def main():
   )
   parser.add_argument(
     "--throttle",
-    type=float,
-    default=0.0,
-    help="Delay in seconds to sleep before launching the next task (default: 0.0s)",
+    type=parse_throttle,
+    default=None,
+    help="Throttling as 'num:seconds' to sleep for 'seconds' after every 'num' tasks (e.g. '5:10' or '1:2.5')",
   )
   parser.add_argument(
     "--verbose",
@@ -480,8 +514,11 @@ def main():
   outdir.mkdir(parents=True, exist_ok=True)
 
   # Save configuration to command.json using vars(args)
+  cmd_vars = vars(args).copy()
+  if cmd_vars.get("throttle") is not None:
+    cmd_vars["throttle"] = f"{cmd_vars['throttle'][0]}:{cmd_vars['throttle'][1]}"
   with open(outdir / "command.json", "w", encoding="utf-8") as f:
-    json.dump(vars(args), f, indent=2)
+    json.dump(cmd_vars, f, indent=2)
 
   mode_desc = (
     "CRUXEval-O (Output -> answer.py:get_output())"
@@ -498,8 +535,9 @@ def main():
   print(f"   Tasks        : {total_tasks} samples")
   print(f"   Workers      : {args.num_workers} parallel workers")
   print(f"   Timeout      : {args.timeout}s per task")
-  if args.throttle > 0:
-    print(f"   Throttle     : {args.throttle}s delay between launches")
+  if args.throttle is not None:
+    t_interval, t_delay = args.throttle
+    print(f"   Throttle     : Sleep {t_delay}s after every {t_interval} task(s)")
   print(f"   Outdir       : {outdir}")
   print("=" * 70)
 
@@ -512,10 +550,29 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(
       max_workers=args.num_workers
     ) as executor:
+      sample_iter = iter(enumerate(samples))
       future_to_sample = {}
-      for idx, sample in enumerate(samples):
+      executed_count = 0
+
+      def submit_next() -> bool:
+        nonlocal executed_count
+        try:
+          idx, sample = next(sample_iter)
+        except StopIteration:
+          return False
+
         sample_res_file = outdir / sample["id"] / "result.json"
         is_cached = sample_res_file.exists()
+
+        if not is_cached:
+          executed_count += 1
+          if (
+            args.throttle is not None
+            and executed_count > 1
+            and (executed_count - 1) % args.throttle[0] == 0
+          ):
+            time.sleep(args.throttle[1])
+
         future = executor.submit(
           evaluate_task,
           sample=sample,
@@ -528,34 +585,58 @@ def main():
           verbose=args.verbose,
         )
         future_to_sample[future] = sample
-        if args.throttle > 0 and not is_cached and idx < total_tasks - 1:
-          time.sleep(args.throttle)
+        return True
 
-      for i, future in enumerate(
-        concurrent.futures.as_completed(future_to_sample), start=1
-      ):
-        res = future.result()
-        results.append(res)
+      # Pre-fill worker pool
+      for _ in range(min(args.num_workers, total_tasks)):
+        if not submit_next():
+          break
 
-        if res["correct"]:
-          passed += 1
-        elif res["answer"] is None:
-          missing_answer += 1
-        else:
-          answer_incorrect += 1
+      completed_count = 0
+      while future_to_sample:
+        done, _ = concurrent.futures.wait(
+          future_to_sample.keys(),
+          return_when=concurrent.futures.FIRST_COMPLETED,
+        )
+        for future in done:
+          sample = future_to_sample.pop(future)
+          res = future.result()
+          results.append(res)
+          completed_count += 1
 
-        rate = (passed / i) * 100
-        if not args.verbose:
-          print(
-            f"[{i}/{total_tasks}] Passed: {passed} | Incorrect: {answer_incorrect} | "
-            f"Missing Answer: {missing_answer} | Current Pass Rate: {rate:.2f}%",
-            end="\r",
-            flush=True,
-          )
+          if res["correct"]:
+            passed += 1
+          elif res["answer"] is None:
+            missing_answer += 1
+          else:
+            answer_incorrect += 1
+
+          rate = (passed / completed_count) * 100
+          if not args.verbose:
+            print(
+              f"[{completed_count}/{total_tasks}] Passed: {passed} | Incorrect: {answer_incorrect} | "
+              f"Missing Answer: {missing_answer} | Current Pass Rate: {rate:.2f}%",
+              end="\r",
+              flush=True,
+            )
+
+          # Submit next task to keep pool full
+          submit_next()
   else:
+    executed_count = 0
     for i, sample in enumerate(samples, start=1):
       sample_res_file = outdir / sample["id"] / "result.json"
       is_cached = sample_res_file.exists()
+
+      if not is_cached:
+        executed_count += 1
+        if (
+          args.throttle is not None
+          and executed_count > 1
+          and (executed_count - 1) % args.throttle[0] == 0
+        ):
+          time.sleep(args.throttle[1])
+
       res = evaluate_task(
         sample=sample,
         mode=args.mode,
@@ -584,8 +665,8 @@ def main():
           flush=True,
         )
 
-      if args.throttle > 0 and not is_cached and i < total_tasks:
-        time.sleep(args.throttle)
+  if not args.verbose and total_tasks > 0:
+    print()  # Ensure newline after progress line carriage return
 
   print("\n" + "=" * 70)
   final_pass_rate = (passed / total_tasks * 100) if total_tasks > 0 else 0.0
