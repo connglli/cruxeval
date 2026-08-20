@@ -468,13 +468,8 @@ def parse_throttle(throttle_str: str | None) -> tuple[int, float] | None:
       )
 
 
-def main():
-  try:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
-  except Exception:
-    pass
-
+def build_argument_parser() -> argparse.ArgumentParser:
+  """Builds and returns the CLI argument parser."""
   parser = argparse.ArgumentParser(
     description="Self-contained AI agent evaluation on CRUXEval (OpenCode & Claude Code)"
   )
@@ -549,36 +544,21 @@ def main():
     action="store_true",
     help="Print detailed logs per task",
   )
+  return parser
 
-  args = parser.parse_args()
 
-  model = args.model
-
-  # Load dataset
-  dataset = load_dataset()
-  start = max(0, args.start)
-  if args.limit is not None:
-    samples = dataset[start : start + args.limit]
-  else:
-    samples = dataset[start:]
-
-  total_tasks = len(samples)
-  outdir = Path(args.outdir).resolve()
-  outdir.mkdir(parents=True, exist_ok=True)
-
-  # Save configuration to command.json using vars(args)
-  cmd_vars = vars(args).copy()
-  if cmd_vars.get("throttle") is not None:
-    cmd_vars["throttle"] = f"{cmd_vars['throttle'][0]}:{cmd_vars['throttle'][1]}"
-  with open(outdir / "command.json", "w", encoding="utf-8") as f:
-    json.dump(cmd_vars, f, indent=2)
-
+def print_startup_banner(
+  args: argparse.Namespace,
+  model: str,
+  total_tasks: int,
+  outdir: Path,
+) -> None:
+  """Prints the benchmark startup configuration banner."""
   mode_desc = (
     "CRUXEval-O (Output -> answer.py:get_output())"
     if args.mode == "output"
     else "CRUXEval-I (Input -> answer.py:get_input())"
   )
-
   print("=" * 70)
   print(f"🤖 {args.agent.upper()} Agent CRUXEval Evaluation")
   print(f"   Mode         : {mode_desc}")
@@ -594,90 +574,56 @@ def main():
   print(f"   Outdir       : {outdir}")
   print("=" * 70)
 
+
+def print_progress(
+  completed: int,
+  total: int,
+  passed: int,
+  incorrect: int,
+  missing: int,
+  verbose: bool = False,
+) -> None:
+  """Prints live evaluation progress line to stdout."""
+  if verbose:
+    return
+  rate = (passed / completed * 100) if completed > 0 else 0.0
+  print(
+    f"\r\033[K[{completed}/{total}] Passed: {passed} | Incorrect: {incorrect} | "
+    f"Missing Answer: {missing} | Current Pass Rate: {rate:.2f}%",
+    end="",
+    flush=True,
+  )
+
+
+def run_evaluation(
+  samples: list[dict[str, Any]],
+  args: argparse.Namespace,
+  model: str,
+  outdir: Path,
+) -> list[dict[str, Any]]:
+  """Runs evaluation across all dataset samples (handles sequential or concurrent workers)."""
+  total_tasks = len(samples)
+  if total_tasks == 0:
+    return []
+
   results = []
   passed = 0
   missing_answer = 0
   answer_incorrect = 0
+  executed_count = 0
 
-  if args.num_workers > 1 and total_tasks > 1:
-    with concurrent.futures.ThreadPoolExecutor(
-      max_workers=args.num_workers
-    ) as executor:
-      sample_iter = iter(enumerate(samples))
-      future_to_sample = {}
-      executed_count = 0
+  workers = max(1, args.num_workers)
+  with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+    sample_iter = iter(enumerate(samples))
+    future_to_sample = {}
 
-      def submit_next() -> bool:
-        nonlocal executed_count
-        try:
-          idx, sample = next(sample_iter)
-        except StopIteration:
-          return False
+    def submit_next() -> bool:
+      nonlocal executed_count
+      try:
+        _, sample = next(sample_iter)
+      except StopIteration:
+        return False
 
-        sample_res_file = outdir / sample["id"] / "result.json"
-        is_cached = sample_res_file.exists()
-
-        if not is_cached:
-          executed_count += 1
-          if (
-            args.throttle is not None
-            and executed_count > 1
-            and (executed_count - 1) % args.throttle[0] == 0
-          ):
-            time.sleep(args.throttle[1])
-
-        future = executor.submit(
-          evaluate_task,
-          sample=sample,
-          mode=args.mode,
-          agent=args.agent,
-          model=model,
-          workspace=outdir / sample["id"],
-          timeout=args.timeout,
-          docker_image=args.docker_image,
-          verbose=args.verbose,
-        )
-        future_to_sample[future] = sample
-        return True
-
-      # Pre-fill worker pool
-      for _ in range(min(args.num_workers, total_tasks)):
-        if not submit_next():
-          break
-
-      completed_count = 0
-      while future_to_sample:
-        done, _ = concurrent.futures.wait(
-          future_to_sample.keys(),
-          return_when=concurrent.futures.FIRST_COMPLETED,
-        )
-        for future in done:
-          sample = future_to_sample.pop(future)
-          res = future.result()
-          results.append(res)
-          completed_count += 1
-
-          if res["correct"]:
-            passed += 1
-          elif res["answer"] is None:
-            missing_answer += 1
-          else:
-            answer_incorrect += 1
-
-          rate = (passed / completed_count) * 100
-          if not args.verbose:
-            print(
-              f"\r\033[K[{completed_count}/{total_tasks}] Passed: {passed} | Incorrect: {answer_incorrect} | "
-              f"Missing Answer: {missing_answer} | Current Pass Rate: {rate:.2f}%",
-              end="",
-              flush=True,
-            )
-
-          # Submit next task to keep pool full
-          submit_next()
-  else:
-    executed_count = 0
-    for i, sample in enumerate(samples, start=1):
       sample_res_file = outdir / sample["id"] / "result.json"
       is_cached = sample_res_file.exists()
 
@@ -690,7 +636,8 @@ def main():
         ):
           time.sleep(args.throttle[1])
 
-      res = evaluate_task(
+      future = executor.submit(
+        evaluate_task,
         sample=sample,
         mode=args.mode,
         agent=args.agent,
@@ -700,33 +647,61 @@ def main():
         docker_image=args.docker_image,
         verbose=args.verbose,
       )
-      results.append(res)
+      future_to_sample[future] = sample
+      return True
 
-      if res["correct"]:
-        passed += 1
-      elif res["answer"] is None:
-        missing_answer += 1
-      else:
-        answer_incorrect += 1
+    # Pre-fill worker pool
+    for _ in range(min(workers, total_tasks)):
+      if not submit_next():
+        break
 
-      rate = (passed / i) * 100
-      if not args.verbose:
-        print(
-          f"\r\033[K[{i}/{total_tasks}] Passed: {passed} | Incorrect: {answer_incorrect} | "
-          f"Missing Answer: {missing_answer} | Current Pass Rate: {rate:.2f}%",
-          end="",
-          flush=True,
+    completed_count = 0
+    while future_to_sample:
+      done, _ = concurrent.futures.wait(
+        future_to_sample.keys(),
+        return_when=concurrent.futures.FIRST_COMPLETED,
+      )
+      for future in done:
+        future_to_sample.pop(future)
+        res = future.result()
+        results.append(res)
+        completed_count += 1
+
+        if res["correct"]:
+          passed += 1
+        elif res["answer"] is None:
+          missing_answer += 1
+        else:
+          answer_incorrect += 1
+
+        print_progress(
+          completed_count, total_tasks, passed, answer_incorrect, missing_answer, verbose=args.verbose
         )
+        submit_next()
 
   if not args.verbose and total_tasks > 0:
     print()  # Ensure newline after progress line carriage return
 
-  print("\n" + "=" * 70)
+  return results
+
+
+def print_and_save_summary(
+  results: list[dict[str, Any]],
+  total_tasks: int,
+  args: argparse.Namespace,
+  model: str,
+  outdir: Path,
+) -> None:
+  """Prints final benchmark metrics and saves lean summary JSON to result.json."""
+  passed = sum(1 for r in results if r.get("correct"))
+  missing_answer = sum(1 for r in results if not r.get("correct") and r.get("answer") is None)
+  answer_incorrect = sum(1 for r in results if not r.get("correct") and r.get("answer") is not None)
   final_pass_rate = (passed / total_tasks * 100) if total_tasks > 0 else 0.0
   total_failed = missing_answer + answer_incorrect
   total_elapsed = sum(r.get("elapsed", 0.0) for r in results)
   avg_elapsed = round(total_elapsed / len(results), 2) if results else 0.0
 
+  print("\n" + "=" * 70)
   print("📊 EVALUATION RESULTS")
   print(f"   Agent            : {args.agent}")
   print(f"   Task Mode        : CRUXEval-{args.mode.upper()}")
@@ -742,7 +717,6 @@ def main():
 
   # Save summary JSON (individual task results are stored in each sample's result.json)
   output_file = outdir / "result.json"
-
   summary = {
     "benchmark": "CRUXEval",
     "agent": args.agent,
@@ -762,6 +736,37 @@ def main():
     json.dump(summary, f, indent=2)
 
   print(f"💾 Results saved to: {output_file}")
+
+
+def main():
+  try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+  except Exception:
+    pass
+
+  parser = build_argument_parser()
+  args = parser.parse_args()
+
+  model = args.model
+  dataset = load_dataset()
+  start = max(0, args.start)
+  samples = dataset[start : start + args.limit] if args.limit is not None else dataset[start:]
+
+  total_tasks = len(samples)
+  outdir = Path(args.outdir).resolve()
+  outdir.mkdir(parents=True, exist_ok=True)
+
+  # Save configuration to command.json using vars(args)
+  cmd_vars = vars(args).copy()
+  if cmd_vars.get("throttle") is not None:
+    cmd_vars["throttle"] = f"{cmd_vars['throttle'][0]}:{cmd_vars['throttle'][1]}"
+  with open(outdir / "command.json", "w", encoding="utf-8") as f:
+    json.dump(cmd_vars, f, indent=2)
+
+  print_startup_banner(args, model, total_tasks, outdir)
+  results = run_evaluation(samples, args, model, outdir)
+  print_and_save_summary(results, total_tasks, args, model, outdir)
 
 
 if __name__ == "__main__":
