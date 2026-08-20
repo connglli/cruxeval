@@ -35,4 +35,4 @@ WORKDIR /workspace
 USER runner
 
 # Default entrypoint executes eval_agent.py with any passed arguments
-ENTRYPOINT ["python3", "codokus/eval_agent.py"]
+ENTRYPOINT ["python3", "agents/eval_agent.py"]

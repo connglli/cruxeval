@@ -27,7 +27,7 @@ exclude = [
   "site-packages",
   "venv",
 ]
-include = ["codokus"]
+include = ["agents"]
 
 # Same as Black.
 line-length = 88

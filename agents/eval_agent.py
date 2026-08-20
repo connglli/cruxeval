@@ -386,8 +386,8 @@ def main():
     "--outdir",
     "-o",
     type=str,
-    default="codokus/output",
-    help="Output directory to store sample directories and result.json (default: codokus/output)",
+    default="agents/output",
+    help="Output directory to store sample directories and result.json (default: agents/output)",
   )
   parser.add_argument(
     "--verbose",
