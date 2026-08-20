@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # Paths resolved relative to this script
@@ -290,9 +291,11 @@ def evaluate_task(
     "answer": None,
     "correct": False,
     "error": None,
+    "elapsed": 0.0,
     "workspace": str(workspace),
   }
 
+  start_time = time.perf_counter()
   try:
     run_agent(
       prompt=prompt,
@@ -315,18 +318,21 @@ def evaluate_task(
     else:
       result["error"] = f"File answer.py was not created by {agent}"
 
-    if verbose:
-      status = "✅ PASS" if result["correct"] else "❌ FAIL"
-      content_preview = (result["answer"] or result["error"] or "")[:60]
-      print(f"[{sample_id}] {status} | answer.py: {content_preview}", flush=True)
-
   except Exception as exc:
     result["error"] = str(exc)
     err_path = workspace / "error.txt"
     existing_err = err_path.read_text(encoding="utf-8") if err_path.exists() else ""
     err_path.write_text(f"{existing_err}\nException: {exc}\n".strip(), encoding="utf-8")
+
+  finally:
+    result["elapsed"] = round(time.perf_counter() - start_time, 2)
     if verbose:
-      print(f"[{sample_id}] ⚠️ ERROR: {exc}", flush=True)
+      status = "✅ PASS" if result["correct"] else "❌ FAIL"
+      content_preview = (result["answer"] or result["error"] or "")[:60]
+      print(
+        f"[{sample_id}] {status} ({result['elapsed']}s) | answer.py: {content_preview}",
+        flush=True,
+      )
 
   return result
 
@@ -508,6 +514,8 @@ def main():
   print("\n" + "=" * 70)
   final_pass_rate = (passed / total_tasks * 100) if total_tasks > 0 else 0.0
   total_failed = missing_answer + answer_incorrect
+  total_elapsed = sum(r.get("elapsed", 0.0) for r in results)
+  avg_elapsed = round(total_elapsed / len(results), 2) if results else 0.0
 
   print("📊 EVALUATION RESULTS")
   print(f"   Agent            : {args.agent}")
@@ -518,7 +526,8 @@ def main():
   print(
     f"   Failed           : {total_failed} (missing_answer: {missing_answer}, answer_incorrect: {answer_incorrect})"
   )
-  print(f"   🏆 Pass Rate     : {final_pass_rate:.2f}%")
+  print(f"   🏆 Pass Rate      : {final_pass_rate:.2f}%")
+  print(f"   ⏱️ Avg Elapsed    : {avg_elapsed:.2f}s")
   print("=" * 70)
 
   # Save summary and results JSON
@@ -535,7 +544,8 @@ def main():
       "missing_answer": missing_answer,
       "answer_incorrect": answer_incorrect,
     },
-    "pass_rate": final_pass_rate,
+    "pass_rate": round(final_pass_rate, 2),
+    "avg_elapsed": avg_elapsed,
     "results": sorted(results, key=lambda x: x["id"]),
   }
 
