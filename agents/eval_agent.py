@@ -15,6 +15,8 @@ Workflow:
 5. Report individual results and the final pass rate.
 """
 
+from __future__ import annotations
+
 import argparse
 import concurrent.futures
 import json
@@ -23,13 +25,14 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 # Paths resolved relative to this script
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATASET_PATH = REPO_ROOT / "data" / "cruxeval.jsonl"
 
 
-def load_dataset(dataset_path: Path = DATASET_PATH) -> list[dict[str, any]]:
+def load_dataset(dataset_path: Path = DATASET_PATH) -> list[dict[str, Any]]:
   """Loads CRUXEval dataset from JSONL file."""
   if not dataset_path.exists():
     raise FileNotFoundError(f"Dataset file not found at: {dataset_path}")
@@ -279,7 +282,7 @@ def verify_functional_correctness(
 
 
 def evaluate_task(
-  sample: dict[str, any],
+  sample: dict[str, Any],
   mode: str,
   agent: str,
   model: str,
@@ -287,7 +290,7 @@ def evaluate_task(
   timeout: int,
   docker_image: str = "cruxeval-agent:latest",
   verbose: bool = False,
-) -> dict[str, any]:
+) -> dict[str, Any]:
   """Runs a single task with an agent (OpenCode or Claude) in its workspace and evaluates result."""
   sample_id = sample["id"]
   code = sample["code"]
@@ -456,15 +459,15 @@ def main():
   with open(outdir / "command.json", "w", encoding="utf-8") as f:
     json.dump(vars(args), f, indent=2)
 
+  mode_desc = (
+    "CRUXEval-O (Output -> answer.py:get_output())"
+    if args.mode == "output"
+    else "CRUXEval-I (Input -> answer.py:get_input())"
+  )
+
   print("=" * 70)
   print(f"🤖 {args.agent.upper()} Agent CRUXEval Evaluation")
-  print(
-    f"   Mode         : CRUXEval-{
-      'O (Output -> answer.py:get_output())'
-      if args.mode == 'output'
-      else 'I (Input -> answer.py:get_input())'
-    }"
-  )
+  print(f"   Mode         : {mode_desc}")
   print(f"   Agent        : {args.agent}")
   print(f"   Model        : {model}")
   print(f"   Docker Image : {args.docker_image}")
