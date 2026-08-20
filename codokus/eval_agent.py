@@ -19,7 +19,6 @@ import argparse
 import concurrent.futures
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -47,50 +46,89 @@ def load_dataset(dataset_path: Path = DATASET_PATH) -> list[dict[str, any]]:
   return records
 
 
-def make_agent_prompt(code: str, target_val: str, mode: str) -> str:
+def make_code_file(code: str, input_val: str, output_val: str, mode: str) -> str:
   """
-  Constructs instructions for the OpenCode agent to write the answer
-  into output.txt or input.txt.
+  Generates code.py with problem definition and a main test block that calls
+  get_output() or get_input() from answer.py.
   """
   if mode == "output":
-    sample_input = target_val
-    return f"""Here is a Python code:
-```python
-{code}
-```
+    return f"""{code}
 
-The function `f` is invoked with the input:
-```python
-{sample_input}
-```
 
-Your goal:
-Determine the exact return value of `f({sample_input})`.
-
-Instructions:
-1. You have full access to bash, python, tools, and the environment. You may run python scripts to inspect, test, or execute the code.
-2. Once you have determined the exact return value / output literal, write ONLY the output value to a file named `output.txt` in the current working directory.
-3. Do not include any extra text, markdown tags, or explanation in `output.txt`. Only the exact Python literal/value (e.g. `42`, `'result'`, `[1, 2]`, `{{'a': 1}}`).
+if __name__ == "__main__":
+    from answer import get_output
+    predicted = get_output()
+    print(f"__ANSWER__={{repr(predicted)}}")
+    expected = f({input_val})
+    assert predicted == expected, f"Mismatch: expected {{expected!r}}, got {{predicted!r}}"
+    print("✅ Correct!")
 """
   elif mode == "input":
-    sample_output = target_val
-    return f"""Here is a Python code:
-```python
-{code}
-```
+    return f"""{code}
 
-The expected return value is:
-```python
-{sample_output}
-```
+
+if __name__ == "__main__":
+    from answer import get_input
+    inp = get_input()
+    print(f"__ANSWER__={{repr(inp)}}")
+    if isinstance(inp, tuple):
+        try:
+            actual = f(*inp)
+        except TypeError:
+            actual = f(inp)
+    else:
+        actual = f(inp)
+    expected = {output_val}
+    assert actual == expected, f"Mismatch: expected {{expected!r}}, got {{actual!r}}"
+    print("✅ Correct!")
+"""
+  else:
+    raise ValueError(f"Unknown mode: {mode}")
+
+
+def make_agent_prompt(input_val: str, output_val: str, mode: str) -> str:
+  """
+  Constructs prompt instructions for the agent to implement get_output() or get_input()
+  in answer.py.
+  """
+  if mode == "output":
+    return f"""You are solving a Python code execution task.
+
+In the current working directory, you will find `code.py` which defines a function `f` and a self-test script.
+
+Your goal:
+Determine the exact return value of calling `f({input_val})`.
+
+Instructions:
+1. Create a file named `answer.py` in the current working directory containing a function `get_output()` that returns your predicted output.
+   Example `answer.py`:
+   ```python
+   def get_output():
+       return 42
+   ```
+2. You have full access to bash, python, tools, and the environment.
+3. You can test your solution at any time by running `python3 code.py`.
+4. Save answer.py in the current working directory and exit when the above test passes. Otherwise, continue iterating until you find the correct output.
+"""
+  elif mode == "input":
+    return f"""You are solving a Python input prediction task.
+
+In the current working directory, you will find `code.py` which defines a function `f` and a self-test script testing against the expected output:
+{output_val}
 
 Your goal:
 Find an input argument or arguments such that executing `f(...)` returns the expected output.
 
 Instructions:
-1. You have full access to bash, python, tools, and the environment. You may run python scripts to test candidate inputs, search, or inspect execution.
-2. Once you have found a valid input, write the input argument(s) or the full function call `f(...)` to a file named `input.txt` in the current working directory.
-3. Do not include any extra text, markdown tags, or explanation in `input.txt`. Only the input (e.g. `'my_input'`, `1, 2`, `[1, 2, 3]`, or `f(1, 2)`).
+1. Create a file named `answer.py` in the current working directory containing a function `get_input()` that returns the input argument(s).
+   Example `answer.py`:
+   ```python
+   def get_input():
+       return [1, 2, 3]
+   ```
+2. You have full access to bash, python, tools, and the environment.
+3. You can test your solution at any time by running `python3 code.py`.
+4. Save answer.py in the current working directory and exit when the above test passes. Otherwise, continue iterating until you find the correct input.
 """
   else:
     raise ValueError(f"Unknown mode: {mode}")
@@ -103,10 +141,11 @@ def run_agent(
   model: str,
   agent_bin: str | None = None,
   timeout: int = 300,
-) -> tuple[str, str, int]:
+) -> int:
   """
-  Executes an AI coding agent (OpenCode or Claude Code) in the given workspace.
-  Returns (stdout, stderr, exit_code).
+  Executes an AI coding agent (OpenCode or Claude Code) in the given workspace,
+  piping stdout directly to traj.jsonl and stderr to error.txt.
+  Returns exit_code.
   """
   env = os.environ.copy()
 
@@ -143,158 +182,82 @@ def run_agent(
   else:
     raise ValueError(f"Unsupported agent '{agent}'. Choose 'opencode' or 'claude'.")
 
-  try:
-    proc = subprocess.Popen(
-      cmd,
-      stdout=subprocess.PIPE,
-      stderr=subprocess.PIPE,
-      text=True,
-      cwd=str(workspace),
-      env=env,
-    )
-    stdout, stderr = proc.communicate(timeout=timeout)
-    return stdout, stderr, proc.returncode
-  except subprocess.TimeoutExpired:
-    proc.kill()
-    stdout, stderr = proc.communicate()
-    # Save captured partial logs on timeout
-    (workspace / "trajectory.jsonl").write_text(stdout or "", encoding="utf-8")
-    (workspace / "error.txt").write_text(
-      (stderr or "") + f"\n{agent} timed out after {timeout}s\n",
-      encoding="utf-8",
-    )
-    raise TimeoutError(f"{agent} timed out after {timeout}s in {workspace}")
-  except FileNotFoundError:
-    raise RuntimeError(
-      f"Agent executable '{bin_name}' not found. "
-      f"Please ensure {agent} is installed or specify --agent-bin."
-    )
+  traj_path = workspace / "traj.jsonl"
+  error_path = workspace / "error.txt"
 
-
-def clean_target_file_content(content: str, mode: str) -> str:
-  """Cleans up raw text read from input.txt or output.txt."""
-  text = content.strip()
-
-  # Remove markdown code block fences if present
-  if "```" in text:
-    blocks = re.findall(r"```(?:python)?\s*([\s\S]*?)\s*```", text)
-    if blocks:
-      text = blocks[-1].strip()
-    else:
-      text = text.replace("```python", "").replace("```", "").strip()
-
-  # Strip answer tags if present
-  if "[ANSWER]" in text:
-    text = text.split("[ANSWER]")[-1]
-    if "[/ANSWER]" in text:
-      text = text.split("[/ANSWER]")[0]
-    text = text.strip()
-
-  if mode == "output":
-    if "==" in text:
-      text = text.split("==")[-1].strip()
-    if text.startswith("assert "):
-      text = text.split("assert ", 1)[-1].strip()
-    # Remove trailing comments
-    text = re.sub(r"#.*$", "", text).strip()
-    return text.strip()
-
-  elif mode == "input":
-    if "==" in text:
-      text = text.split("==")[0].strip()
-    if text.startswith("assert "):
-      text = text.split("assert ", 1)[-1].strip()
-    text = re.sub(r"#.*$", "", text).strip()
-    return text.strip()
-
-  return text.strip()
+  with (
+    open(traj_path, "w", encoding="utf-8") as fout,
+    open(error_path, "w", encoding="utf-8") as ferr,
+  ):
+    try:
+      proc = subprocess.Popen(
+        cmd,
+        stdout=fout,
+        stderr=ferr,
+        cwd=str(workspace),
+        env=env,
+      )
+      return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+      proc.kill()
+      proc.wait()
+      with open(error_path, "a", encoding="utf-8") as append_err:
+        append_err.write(f"\n{agent} timed out after {timeout}s\n")
+      raise TimeoutError(f"{agent} timed out after {timeout}s in {workspace}")
+    except FileNotFoundError:
+      raise RuntimeError(
+        f"Agent executable '{bin_name}' not found. "
+        f"Please ensure {agent} is installed or specify --agent-bin."
+      )
 
 
 def verify_functional_correctness(
-  code: str,
-  answer: str,
-  expected: str,
-  mode: str,
+  workspace: Path,
+  clean_code_content: str,
   timeout: float = 4.0,
-) -> tuple[bool, str]:
+) -> tuple[bool, str | None, str]:
   """
-  Self-contained sandboxed execution to verify if the model's answer is correct.
-  Does not depend on any external modules.
+  Independently executes code.py in workspace to verify answer.py.
+  Restores trusted code.py before execution to prevent tampered assertions.
+  Returns (correct: bool, evaluated_answer_repr: str | None, error_or_status: str).
   """
-  if not answer:
-    return False, "Answer is empty"
+  answer_file = workspace / "answer.py"
+  if not answer_file.exists():
+    return False, None, "File answer.py was not created by agent"
 
-  if mode == "output":
-    # Check if f(input) == predicted_output or expected_output == predicted_output
-    test_script = f"""
-{code}
-
-# Test equivalence
-try:
-    _expected = {expected}
-except Exception as _e:
-    _expected = None
-
-_predicted_raw = {repr(answer)}
-
-try:
-    _predicted_eval = eval({repr(answer)})
-except Exception:
-    _predicted_eval = _predicted_raw
-
-if _expected is not None and _predicted_eval == _expected:
-    sys.exit(0)
-
-# Check assertion
-try:
-    assert _expected == _predicted_eval
-    sys.exit(0)
-except Exception:
-    pass
-
-try:
-    assert {expected} == {answer}
-    sys.exit(0)
-except Exception as e:
-    sys.exit(1)
-"""
-  elif mode == "input":
-    # Format the call: either f(...) or f(arg)
-    if answer.startswith("f(") and answer.endswith(")"):
-      call_expr = answer
-    else:
-      call_expr = f"f({answer})"
-
-    test_script = f"""
-{code}
-
-try:
-    _expected = {expected}
-    _actual = {call_expr}
-    assert _actual == _expected
-    sys.exit(0)
-except Exception as e:
-    sys.exit(1)
-"""
-  else:
-    return False, f"Invalid mode {mode}"
+  # Restore trusted code.py to ensure the assertion logic is authentic
+  (workspace / "code.py").write_text(clean_code_content, encoding="utf-8")
 
   try:
     proc = subprocess.run(
-      [sys.executable, "-c", test_script],
+      [sys.executable, "code.py"],
+      cwd=str(workspace),
       capture_output=True,
       text=True,
       timeout=timeout,
     )
+
+    # Extract evaluated answer representation from stdout
+    answer_repr = None
+    for line in proc.stdout.splitlines():
+      if line.startswith("__ANSWER__="):
+        answer_repr = line[len("__ANSWER__=") :]
+        break
+
     if proc.returncode == 0:
-      return True, "Passed"
+      return True, answer_repr, "Passed"
     else:
       err = proc.stderr.strip() or proc.stdout.strip()
-      return False, f"Assertion failed: {err}" if err else "Assertion failed"
+      return (
+        False,
+        answer_repr,
+        f"Assertion failed: {err}" if err else "Assertion failed",
+      )
+
   except subprocess.TimeoutExpired:
-    return False, f"Verification execution timed out ({timeout}s)"
+    return False, None, f"Verification execution timed out ({timeout}s)"
   except Exception as e:
-    return False, f"Verification error: {e}"
+    return False, None, f"Verification error: {e}"
 
 
 def evaluate_task(
@@ -313,23 +276,22 @@ def evaluate_task(
   input_val = sample.get("input", "")
   output_val = sample.get("output", "")
 
-  target_val = input_val if mode == "output" else output_val
-  target_filename = "output.txt" if mode == "output" else "input.txt"
-
   # Setup isolated task workspace
   workspace.mkdir(parents=True, exist_ok=True)
 
-  # Save code to workspace for agent convenience
+  # Generate code.py with main test block
+  code_content = make_code_file(
+    code=code, input_val=input_val, output_val=output_val, mode=mode
+  )
   with open(workspace / "code.py", "w", encoding="utf-8") as f:
-    f.write(code + "\n")
+    f.write(code_content)
 
-  prompt = make_agent_prompt(code=code, target_val=target_val, mode=mode)
+  prompt = make_agent_prompt(input_val=input_val, output_val=output_val, mode=mode)
 
   result = {
     "id": sample_id,
     "input": input_val,
     "output": output_val,
-    "raw_answer": None,
     "answer": None,
     "correct": False,
     "error": None,
@@ -337,7 +299,7 @@ def evaluate_task(
   }
 
   try:
-    stdout, stderr, _ = run_agent(
+    run_agent(
       prompt=prompt,
       workspace=workspace,
       agent=agent,
@@ -346,34 +308,23 @@ def evaluate_task(
       timeout=timeout,
     )
 
-    # Save agent stdout to trajectory.jsonl and stderr to error.txt
-    (workspace / "trajectory.jsonl").write_text(stdout or "", encoding="utf-8")
-    (workspace / "error.txt").write_text(stderr or "", encoding="utf-8")
+    answer_file_path = workspace / "answer.py"
 
-    target_file_path = workspace / target_filename
-
-    if target_file_path.exists():
-      raw_answer = target_file_path.read_text(encoding="utf-8").strip()
-      result["raw_answer"] = raw_answer
-      result["answer"] = clean_target_file_content(raw_answer, mode)
-
-      correct, msg = verify_functional_correctness(
-        code=code,
-        answer=result["answer"],
-        expected=output_val,
-        mode=mode,
+    if answer_file_path.exists():
+      correct, answer_val, msg = verify_functional_correctness(
+        workspace=workspace,
+        clean_code_content=code_content,
       )
+      result["answer"] = answer_val
       result["correct"] = correct
       result["error"] = None if correct else msg
     else:
-      result["error"] = f"File {target_filename} was not created by {agent}"
+      result["error"] = f"File answer.py was not created by {agent}"
 
     if verbose:
       status = "✅ PASS" if result["correct"] else "❌ FAIL"
-      content_preview = (result["raw_answer"] or result["error"] or "")[:60]
-      print(
-        f"[{sample_id}] {status} | {target_filename}: {content_preview}", flush=True
-      )
+      content_preview = (result["answer"] or result["error"] or "")[:60]
+      print(f"[{sample_id}] {status} | answer.py: {content_preview}", flush=True)
 
   except Exception as exc:
     result["error"] = str(exc)
@@ -402,7 +353,7 @@ def main():
     type=str,
     choices=["output", "input"],
     default="output",
-    help="Evaluation mode: 'output' (write to output.txt) or 'input' (write to input.txt)",
+    help="Evaluation mode: 'output' (answer.py with get_output()) or 'input' (answer.py with get_input())",
   )
   parser.add_argument(
     "--model",
@@ -450,7 +401,7 @@ def main():
     "-o",
     type=str,
     default="codokus/output",
-    help="Output directory to store workspaces and result.json (default: codokus/output)",
+    help="Output directory to store sample directories and result.json (default: codokus/output)",
   )
   parser.add_argument(
     "--verbose",
@@ -481,21 +432,23 @@ def main():
 
   total_tasks = len(samples)
   outdir = Path(args.outdir).resolve()
-  workspace_base = outdir / "workspace"
-  workspace_base.mkdir(parents=True, exist_ok=True)
+  outdir.mkdir(parents=True, exist_ok=True)
 
   print("=" * 70)
   print(f"🤖 {args.agent.upper()} Agent CRUXEval Evaluation")
   print(
-    f"   Mode         : CRUXEval-{'O (Output -> output.txt)' if args.mode == 'output' else 'I (Input -> input.txt)'}"
+    f"   Mode         : CRUXEval-{
+      'O (Output -> answer.py:get_output())'
+      if args.mode == 'output'
+      else 'I (Input -> answer.py:get_input())'
+    }"
   )
   print(f"   Agent        : {args.agent}")
   print(f"   Model        : {model}")
   print(f"   Tasks        : {total_tasks} samples")
   print(f"   Workers      : {args.num_workers} parallel workers")
   print(f"   Timeout      : {args.timeout}s per task")
-  print(f"   Output Dir   : {outdir}")
-  print(f"   Workspaces   : {workspace_base}")
+  print(f"   Outdir       : {outdir}")
   print("=" * 70)
 
   results = []
@@ -514,7 +467,7 @@ def main():
           mode=args.mode,
           agent=args.agent,
           model=model,
-          workspace=workspace_base / sample["id"],
+          workspace=outdir / sample["id"],
           agent_bin=args.agent_bin,
           timeout=args.timeout,
           verbose=args.verbose,
@@ -530,7 +483,7 @@ def main():
 
         if res["correct"]:
           passed += 1
-        elif res["raw_answer"] is None:
+        elif res["answer"] is None:
           missing_answer += 1
         else:
           answer_incorrect += 1
@@ -550,7 +503,7 @@ def main():
         mode=args.mode,
         agent=args.agent,
         model=model,
-        workspace=workspace_base / sample["id"],
+        workspace=outdir / sample["id"],
         agent_bin=args.agent_bin,
         timeout=args.timeout,
         verbose=args.verbose,
@@ -559,7 +512,7 @@ def main():
 
       if res["correct"]:
         passed += 1
-      elif res["raw_answer"] is None:
+      elif res["answer"] is None:
         missing_answer += 1
       else:
         answer_incorrect += 1

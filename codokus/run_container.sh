@@ -77,6 +77,7 @@ fi
 echo "🚀 Launching container '${IMAGE_NAME}'..."
 
 docker run --rm -it \
+  -e PYTHONUNBUFFERED=1 \
   --user "$(id -u):$(id -g)" \
   -v "${REPO_ROOT}:/workspace" \
   -w /workspace \
