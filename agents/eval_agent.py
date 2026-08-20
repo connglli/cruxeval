@@ -336,6 +336,11 @@ def main():
     description="Self-contained AI agent evaluation on CRUXEval (OpenCode & Claude Code)"
   )
   parser.add_argument(
+    "model",
+    type=str,
+    help="Model passed to agent (e.g., 'claude-opus-5', 'opencode/deepseek-v4-pro')",
+  )
+  parser.add_argument(
     "--agent",
     type=str,
     choices=["opencode", "claude"],
@@ -348,12 +353,6 @@ def main():
     choices=["output", "input"],
     default="output",
     help="Evaluation mode: 'output' (answer.py with get_output()) or 'input' (answer.py with get_input())",
-  )
-  parser.add_argument(
-    "--model",
-    type=str,
-    default=None,
-    help="Model passed to agent (default: 'opencode/deepseek-v4-flash-free' for opencode, 'claude-3-5-sonnet-20241022' for claude)",
   )
   parser.add_argument(
     "--num-workers",
@@ -398,15 +397,7 @@ def main():
 
   args = parser.parse_args()
 
-  # Set default model based on agent if not specified
-  if args.model is None:
-    model = (
-      "claude-3-5-sonnet-20241022"
-      if args.agent == "claude"
-      else "opencode/deepseek-v4-flash-free"
-    )
-  else:
-    model = args.model
+  model = args.model
 
   # Load dataset
   dataset = load_dataset()
@@ -419,6 +410,10 @@ def main():
   total_tasks = len(samples)
   outdir = Path(args.outdir).resolve()
   outdir.mkdir(parents=True, exist_ok=True)
+
+  # Save configuration to command.json using vars(args)
+  with open(outdir / "command.json", "w", encoding="utf-8") as f:
+    json.dump(vars(args), f, indent=2)
 
   print("=" * 70)
   print(f"🤖 {args.agent.upper()} Agent CRUXEval Evaluation")
