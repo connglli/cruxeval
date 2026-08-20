@@ -139,7 +139,6 @@ def run_agent(
   workspace: Path,
   agent: str,
   model: str,
-  agent_bin: str | None = None,
   timeout: int = 300,
 ) -> int:
   """
@@ -150,9 +149,8 @@ def run_agent(
   env = os.environ.copy()
 
   if agent == "opencode":
-    bin_name = agent_bin or "opencode"
     cmd = [
-      bin_name,
+      "opencode",
       "run",
       prompt,
       "--model",
@@ -162,9 +160,8 @@ def run_agent(
       "json",
     ]
   elif agent == "claude":
-    bin_name = agent_bin or "claude"
     cmd = [
-      bin_name,
+      "claude",
       "--print",
       "--verbose",
       "--model",
@@ -206,8 +203,7 @@ def run_agent(
       raise TimeoutError(f"{agent} timed out after {timeout}s in {workspace}")
     except FileNotFoundError:
       raise RuntimeError(
-        f"Agent executable '{bin_name}' not found. "
-        f"Please ensure {agent} is installed or specify --agent-bin."
+        f"Agent executable '{agent}' not found. Please ensure {agent} is installed."
       )
 
 
@@ -266,7 +262,6 @@ def evaluate_task(
   agent: str,
   model: str,
   workspace: Path,
-  agent_bin: str | None,
   timeout: int,
   verbose: bool = False,
 ) -> dict[str, any]:
@@ -304,7 +299,6 @@ def evaluate_task(
       workspace=workspace,
       agent=agent,
       model=model,
-      agent_bin=agent_bin,
       timeout=timeout,
     )
 
@@ -365,8 +359,8 @@ def main():
     "--num-workers",
     "-j",
     type=int,
-    default=4,
-    help="Concurrency / parallel worker processes (default: 4)",
+    default=1,
+    help="Concurrency / parallel worker processes (default: 1)",
   )
   parser.add_argument(
     "--start",
@@ -387,14 +381,6 @@ def main():
     type=int,
     default=300,
     help="Timeout in seconds for agent per task (default: 300s / 5min)",
-  )
-  parser.add_argument(
-    "--agent-bin",
-    "--opencode",
-    dest="agent_bin",
-    type=str,
-    default=None,
-    help="Path or name of agent executable (default: same as --agent)",
   )
   parser.add_argument(
     "--outdir",
@@ -468,7 +454,6 @@ def main():
           agent=args.agent,
           model=model,
           workspace=outdir / sample["id"],
-          agent_bin=args.agent_bin,
           timeout=args.timeout,
           verbose=args.verbose,
         ): sample
@@ -504,7 +489,6 @@ def main():
         agent=args.agent,
         model=model,
         workspace=outdir / sample["id"],
-        agent_bin=args.agent_bin,
         timeout=args.timeout,
         verbose=args.verbose,
       )
