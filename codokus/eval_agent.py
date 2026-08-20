@@ -371,7 +371,9 @@ def evaluate_task(
     if verbose:
       status = "✅ PASS" if result["correct"] else "❌ FAIL"
       content_preview = (result["raw_answer"] or result["error"] or "")[:60]
-      print(f"[{sample_id}] {status} | {target_filename}: {content_preview}")
+      print(
+        f"[{sample_id}] {status} | {target_filename}: {content_preview}", flush=True
+      )
 
   except Exception as exc:
     result["error"] = str(exc)
@@ -379,7 +381,7 @@ def evaluate_task(
     existing_err = err_path.read_text(encoding="utf-8") if err_path.exists() else ""
     err_path.write_text(f"{existing_err}\nException: {exc}\n".strip(), encoding="utf-8")
     if verbose:
-      print(f"[{sample_id}] ⚠️ ERROR: {exc}")
+      print(f"[{sample_id}] ⚠️ ERROR: {exc}", flush=True)
 
   return result
 

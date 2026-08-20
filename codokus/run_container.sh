@@ -76,7 +76,7 @@ fi
 
 echo "🚀 Launching container '${IMAGE_NAME}'..."
 
-docker run --rm -i \
+docker run --rm -it \
   --user "$(id -u):$(id -g)" \
   -v "${REPO_ROOT}:/workspace" \
   -w /workspace \
