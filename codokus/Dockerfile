@@ -22,8 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get autoremove -y && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Install OpenCode CLI globally
-RUN npm install -g opencode-ai
+# Install Claude Code and OpenCode CLI globally
+RUN npm install -g @anthropic-ai/claude-code opencode-ai
 
 # Create non-root user matching host UID/GID
 RUN groupadd -g ${GID} runner 2>/dev/null || true \
@@ -34,5 +34,5 @@ RUN groupadd -g ${GID} runner 2>/dev/null || true \
 WORKDIR /workspace
 USER runner
 
-# Default entrypoint executes run_opencode.py with any passed arguments
-ENTRYPOINT ["python3", "codokus/run_opencode.py"]
+# Default entrypoint executes eval_agent.py with any passed arguments
+ENTRYPOINT ["python3", "codokus/eval_agent.py"]

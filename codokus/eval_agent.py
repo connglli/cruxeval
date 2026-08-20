@@ -18,6 +18,7 @@ Workflow:
 import argparse
 import concurrent.futures
 import json
+import os
 import re
 import subprocess
 import sys
@@ -63,7 +64,8 @@ The function `f` is invoked with the input:
 {sample_input}
 ```
 
-Your goal: Determine the exact return value of `f({sample_input})`.
+Your goal:
+Determine the exact return value of `f({sample_input})`.
 
 Instructions:
 1. You have full access to bash, python, tools, and the environment. You may run python scripts to inspect, test, or execute the code.
@@ -94,27 +96,52 @@ Instructions:
     raise ValueError(f"Unknown mode: {mode}")
 
 
-def run_opencode_agent(
+def run_agent(
   prompt: str,
   workspace: Path,
+  agent: str,
   model: str,
-  opencode: str = "opencode",
+  agent_bin: str | None = None,
   timeout: int = 300,
 ) -> tuple[str, str, int]:
   """
-  Executes OpenCode agent in the given workspace directory.
+  Executes an AI coding agent (OpenCode or Claude Code) in the given workspace.
   Returns (stdout, stderr, exit_code).
   """
-  cmd = [
-    opencode,
-    "run",
-    prompt,
-    "--model",
-    model,
-    "--auto",
-    "--format",
-    "json",
-  ]
+  env = os.environ.copy()
+
+  if agent == "opencode":
+    bin_name = agent_bin or "opencode"
+    cmd = [
+      bin_name,
+      "run",
+      prompt,
+      "--model",
+      model,
+      "--auto",
+      "--format",
+      "json",
+    ]
+  elif agent == "claude":
+    bin_name = agent_bin or "claude"
+    cmd = [
+      bin_name,
+      "--print",
+      "--verbose",
+      "--model",
+      model,
+      "--output-format",
+      "stream-json",
+      "--dangerously-skip-permissions",
+      prompt,
+    ]
+    # Set default Claude model environment variables
+    env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
+    env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
+    env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model
+    env["CLAUDE_CODE_SUBAGENT_MODEL"] = model
+  else:
+    raise ValueError(f"Unsupported agent '{agent}'. Choose 'opencode' or 'claude'.")
 
   try:
     proc = subprocess.Popen(
@@ -123,6 +150,7 @@ def run_opencode_agent(
       stderr=subprocess.PIPE,
       text=True,
       cwd=str(workspace),
+      env=env,
     )
     stdout, stderr = proc.communicate(timeout=timeout)
     return stdout, stderr, proc.returncode
@@ -132,14 +160,14 @@ def run_opencode_agent(
     # Save captured partial logs on timeout
     (workspace / "trajectory.jsonl").write_text(stdout or "", encoding="utf-8")
     (workspace / "error.txt").write_text(
-      (stderr or "") + f"\nOpenCode timed out after {timeout}s\n",
+      (stderr or "") + f"\n{agent} timed out after {timeout}s\n",
       encoding="utf-8",
     )
-    raise TimeoutError(f"OpenCode timed out after {timeout}s in {workspace}")
+    raise TimeoutError(f"{agent} timed out after {timeout}s in {workspace}")
   except FileNotFoundError:
     raise RuntimeError(
-      f"OpenCode executable '{opencode}' not found. "
-      "Please ensure opencode is installed or specify --opencode-binary."
+      f"Agent executable '{bin_name}' not found. "
+      f"Please ensure {agent} is installed or specify --agent-bin."
     )
 
 
@@ -272,13 +300,14 @@ except Exception as e:
 def evaluate_task(
   sample: dict[str, any],
   mode: str,
+  agent: str,
   model: str,
   workspace: Path,
-  opencode: str,
+  agent_bin: str | None,
   timeout: int,
   verbose: bool = False,
 ) -> dict[str, any]:
-  """Runs a single task with OpenCode agent in its workspace and evaluates result."""
+  """Runs a single task with an agent (OpenCode or Claude) in its workspace and evaluates result."""
   sample_id = sample["id"]
   code = sample["code"]
   input_val = sample.get("input", "")
@@ -308,11 +337,12 @@ def evaluate_task(
   }
 
   try:
-    stdout, stderr, _ = run_opencode_agent(
+    stdout, stderr, _ = run_agent(
       prompt=prompt,
       workspace=workspace,
+      agent=agent,
       model=model,
-      opencode=opencode,
+      agent_bin=agent_bin,
       timeout=timeout,
     )
 
@@ -336,7 +366,7 @@ def evaluate_task(
       result["correct"] = correct
       result["error"] = None if correct else msg
     else:
-      result["error"] = f"File {target_filename} was not created by OpenCode"
+      result["error"] = f"File {target_filename} was not created by {agent}"
 
     if verbose:
       status = "✅ PASS" if result["correct"] else "❌ FAIL"
@@ -356,7 +386,14 @@ def evaluate_task(
 
 def main():
   parser = argparse.ArgumentParser(
-    description="Self-contained OpenCode agent evaluation on CRUXEval (input/output prediction via file)"
+    description="Self-contained AI agent evaluation on CRUXEval (OpenCode & Claude Code)"
+  )
+  parser.add_argument(
+    "--agent",
+    type=str,
+    choices=["opencode", "claude"],
+    default="opencode",
+    help="Agent to evaluate: 'opencode' or 'claude' (default: opencode)",
   )
   parser.add_argument(
     "--mode",
@@ -368,8 +405,8 @@ def main():
   parser.add_argument(
     "--model",
     type=str,
-    default="opencode/deepseek-v4-flash-free",
-    help="Model passed to OpenCode (default: opencode/deepseek-v4-flash-free)",
+    default=None,
+    help="Model passed to agent (default: 'opencode/deepseek-v4-flash-free' for opencode, 'claude-3-5-sonnet-20241022' for claude)",
   )
   parser.add_argument(
     "--num-workers",
@@ -396,13 +433,15 @@ def main():
     "--timeout",
     type=int,
     default=300,
-    help="Timeout in seconds for OpenCode agent per task (default: 300s / 5min)",
+    help="Timeout in seconds for agent per task (default: 300s / 5min)",
   )
   parser.add_argument(
+    "--agent-bin",
     "--opencode",
+    dest="agent_bin",
     type=str,
-    default="opencode",
-    help="Path or name of opencode executable (default: opencode)",
+    default=None,
+    help="Path or name of agent executable (default: same as --agent)",
   )
   parser.add_argument(
     "--outdir",
@@ -420,6 +459,16 @@ def main():
 
   args = parser.parse_args()
 
+  # Set default model based on agent if not specified
+  if args.model is None:
+    model = (
+      "claude-3-5-sonnet-20241022"
+      if args.agent == "claude"
+      else "opencode/deepseek-v4-flash-free"
+    )
+  else:
+    model = args.model
+
   # Load dataset
   dataset = load_dataset()
   start = max(0, args.start)
@@ -434,11 +483,12 @@ def main():
   workspace_base.mkdir(parents=True, exist_ok=True)
 
   print("=" * 70)
-  print("🤖 OpenCode Agent CRUXEval Evaluation")
+  print(f"🤖 {args.agent.upper()} Agent CRUXEval Evaluation")
   print(
     f"   Mode         : CRUXEval-{'O (Output -> output.txt)' if args.mode == 'output' else 'I (Input -> input.txt)'}"
   )
-  print(f"   Model        : {args.model}")
+  print(f"   Agent        : {args.agent}")
+  print(f"   Model        : {model}")
   print(f"   Tasks        : {total_tasks} samples")
   print(f"   Workers      : {args.num_workers} parallel workers")
   print(f"   Timeout      : {args.timeout}s per task")
@@ -460,9 +510,10 @@ def main():
           evaluate_task,
           sample=sample,
           mode=args.mode,
-          model=args.model,
+          agent=args.agent,
+          model=model,
           workspace=workspace_base / sample["id"],
-          opencode=args.opencode,
+          agent_bin=args.agent_bin,
           timeout=args.timeout,
           verbose=args.verbose,
         ): sample
@@ -495,9 +546,10 @@ def main():
       res = evaluate_task(
         sample=sample,
         mode=args.mode,
-        model=args.model,
+        agent=args.agent,
+        model=model,
         workspace=workspace_base / sample["id"],
-        opencode=args.opencode,
+        agent_bin=args.agent_bin,
         timeout=args.timeout,
         verbose=args.verbose,
       )
@@ -524,8 +576,9 @@ def main():
   total_failed = missing_answer + answer_incorrect
 
   print("📊 EVALUATION RESULTS")
+  print(f"   Agent            : {args.agent}")
   print(f"   Task Mode        : CRUXEval-{args.mode.upper()}")
-  print(f"   Model            : {args.model}")
+  print(f"   Model            : {model}")
   print(f"   Total Tasks      : {total_tasks}")
   print(f"   Passed           : {passed}")
   print(
@@ -539,8 +592,9 @@ def main():
 
   summary = {
     "benchmark": "CRUXEval",
+    "agent": args.agent,
     "mode": args.mode,
-    "model": args.model,
+    "model": model,
     "total_tasks": total_tasks,
     "passed": passed,
     "failed": {

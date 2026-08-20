@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# run_container.sh — Build and run OpenCode in a dedicated Docker image
+# run_container.sh — Build and run agent benchmark in a dedicated Docker image
 # ==============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-IMAGE_NAME="${IMAGE_NAME:-cruxeval-opencode:latest}"
+IMAGE_NAME="${IMAGE_NAME:-cruxeval-agent:latest}"
 DOCKERFILE="${SCRIPT_DIR}/Dockerfile"
 
 # Check for --rebuild flag
@@ -23,7 +23,7 @@ done
 
 # Build Docker image if not present or if --rebuild specified
 if [[ "$REBUILD" -eq 1 ]] || ! docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
-  echo "📦 Building Docker image '${IMAGE_NAME}' (Ubuntu 24.04 + OpenCode)..."
+  echo "📦 Building Docker image '${IMAGE_NAME}' (Ubuntu 24.04 + OpenCode + Claude Code)..."
   docker build \
     -t "${IMAGE_NAME}" \
     --build-arg UID="$(id -u)" \
