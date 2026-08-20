@@ -1,0 +1,18 @@
+{
+  "editor.formatOnSave": true,
+  "editor.formatOnPaste": false,
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.codeActionsOnSave": {
+      "source.fixAll": "never",
+      "source.organizeImports": "always",
+      "source.unusedImports": "always"
+    }
+  },
+  "ruff.path": [
+    "${workspaceFolder}/venv/bin/ruff"
+  ],
+  "ruff.enable": true,
+  "ruff.configuration": "${workspaceFolder}/.ruff.toml",
+  "ruff.configurationPreference": "filesystemFirst"
+}
