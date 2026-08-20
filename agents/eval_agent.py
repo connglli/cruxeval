@@ -422,6 +422,12 @@ def parse_throttle(throttle_str: str | None) -> tuple[int, float] | None:
 
 
 def main():
+  try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+  except Exception:
+    pass
+
   parser = argparse.ArgumentParser(
     description="Self-contained AI agent evaluation on CRUXEval (OpenCode & Claude Code)"
   )
@@ -614,9 +620,9 @@ def main():
           rate = (passed / completed_count) * 100
           if not args.verbose:
             print(
-              f"[{completed_count}/{total_tasks}] Passed: {passed} | Incorrect: {answer_incorrect} | "
+              f"\r\033[K[{completed_count}/{total_tasks}] Passed: {passed} | Incorrect: {answer_incorrect} | "
               f"Missing Answer: {missing_answer} | Current Pass Rate: {rate:.2f}%",
-              end="\r",
+              end="",
               flush=True,
             )
 
@@ -659,9 +665,9 @@ def main():
       rate = (passed / i) * 100
       if not args.verbose:
         print(
-          f"[{i}/{total_tasks}] Passed: {passed} | Incorrect: {answer_incorrect} | "
+          f"\r\033[K[{i}/{total_tasks}] Passed: {passed} | Incorrect: {answer_incorrect} | "
           f"Missing Answer: {missing_answer} | Current Pass Rate: {rate:.2f}%",
-          end="\r",
+          end="",
           flush=True,
         )
 
