@@ -328,6 +328,21 @@ def verify_functional_correctness(
     return False, None, f"Verification error: {e}"
 
 
+def is_sample_completed(workspace: Path) -> bool:
+  """
+  A sample is only considered finished if result.json exists AND traj.jsonl is non-empty.
+  If traj.jsonl is missing or empty, the execution was interrupted (e.g. rate-limited).
+  """
+  result_file = workspace / "result.json"
+  traj_file = workspace / "traj.jsonl"
+  if not result_file.exists() or not traj_file.exists():
+    return False
+  try:
+    return traj_file.stat().st_size > 0
+  except OSError:
+    return False
+
+
 def evaluate_task(
   sample: dict[str, Any],
   mode: str,
@@ -342,8 +357,8 @@ def evaluate_task(
   sample_id = sample["id"]
   sample_result_file = workspace / "result.json"
 
-  # Resume from previous execution if sample result.json already exists
-  if sample_result_file.exists():
+  # Resume from previous execution only if sample is fully completed (non-empty traj.jsonl)
+  if is_sample_completed(workspace):
     try:
       with open(sample_result_file, "r", encoding="utf-8") as f:
         cached_result = json.load(f)
@@ -358,7 +373,7 @@ def evaluate_task(
         )
       return cached_result
     except Exception:
-      pass  # Corrupt or incomplete, re-run
+      pass  # Corrupt or unreadable, re-run
 
   code = sample["code"]
   input_val = sample.get("input", "")
@@ -624,8 +639,8 @@ def run_evaluation(
       except StopIteration:
         return False
 
-      sample_res_file = outdir / sample["id"] / "result.json"
-      is_cached = sample_res_file.exists()
+      workspace = outdir / sample["id"]
+      is_cached = is_sample_completed(workspace)
 
       if not is_cached:
         executed_count += 1
