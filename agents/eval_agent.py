@@ -198,6 +198,9 @@ def run_agent(
   Returns exit_code.
   """
   env = os.environ.copy()
+  container_name = (
+    f"cruxeval-{workspace.name}-{os.getpid()}-{int(time.time() * 1000) % 100000}"
+  )
 
   if agent == "opencode":
     agent_cmd = [
@@ -234,6 +237,8 @@ def run_agent(
     "docker",
     "run",
     "--rm",
+    "--name",
+    container_name,
     "-e",
     "PYTHONUNBUFFERED=1",
     "-v",
@@ -257,6 +262,7 @@ def run_agent(
     open(traj_path, "w", encoding="utf-8") as fout,
     open(error_path, "w", encoding="utf-8") as ferr,
   ):
+    proc = None
     try:
       proc = subprocess.Popen(
         cmd,
@@ -265,10 +271,11 @@ def run_agent(
         cwd=str(workspace),
         env=env,
       )
-      return proc.wait(timeout=timeout)
+      return proc.wait(timeout=timeout + 15)  # Extra buffer for container startup
     except subprocess.TimeoutExpired:
-      proc.kill()
-      proc.wait()
+      if proc:
+        proc.kill()
+        proc.wait()
       with open(error_path, "a", encoding="utf-8") as append_err:
         append_err.write(f"\n{agent} timed out after {timeout}s\n")
       raise TimeoutError(f"{agent} timed out after {timeout}s in {workspace}")
@@ -276,6 +283,13 @@ def run_agent(
       executable = cmd[0]
       raise RuntimeError(
         f"Executable '{executable}' not found. Please ensure Docker is installed and in PATH."
+      )
+    finally:
+      # Explicitly kill and remove the container if it is still running
+      subprocess.run(
+        ["docker", "rm", "-f", container_name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
       )
 
 
@@ -690,7 +704,12 @@ def run_evaluation(
           answer_incorrect += 1
 
         print_progress(
-          completed_count, total_tasks, passed, answer_incorrect, missing_answer, verbose=args.verbose
+          completed_count,
+          total_tasks,
+          passed,
+          answer_incorrect,
+          missing_answer,
+          verbose=args.verbose,
         )
         submit_next()
 
@@ -709,8 +728,12 @@ def print_and_save_summary(
 ) -> None:
   """Prints final benchmark metrics and saves lean summary JSON to result.json."""
   passed = sum(1 for r in results if r.get("correct"))
-  missing_answer = sum(1 for r in results if not r.get("correct") and r.get("answer") is None)
-  answer_incorrect = sum(1 for r in results if not r.get("correct") and r.get("answer") is not None)
+  missing_answer = sum(
+    1 for r in results if not r.get("correct") and r.get("answer") is None
+  )
+  answer_incorrect = sum(
+    1 for r in results if not r.get("correct") and r.get("answer") is not None
+  )
   final_pass_rate = (passed / total_tasks * 100) if total_tasks > 0 else 0.0
   total_failed = missing_answer + answer_incorrect
   total_elapsed = sum(r.get("elapsed", 0.0) for r in results)
@@ -766,7 +789,9 @@ def main():
   model = args.model
   dataset = load_dataset()
   start = max(0, args.start)
-  samples = dataset[start : start + args.limit] if args.limit is not None else dataset[start:]
+  samples = (
+    dataset[start : start + args.limit] if args.limit is not None else dataset[start:]
+  )
 
   total_tasks = len(samples)
   outdir = Path(args.outdir).resolve()
