@@ -342,17 +342,30 @@ def verify_functional_correctness(
     return False, None, f"Verification error: {e}"
 
 
-def is_sample_completed(workspace: Path) -> bool:
+def is_sample_completed(workspace: Path, agent: str = "opencode") -> bool:
   """
-  A sample is only considered finished if result.json exists AND traj.jsonl is non-empty.
-  If traj.jsonl is missing or empty, the execution was interrupted (e.g. rate-limited).
+  A sample is only considered finished if result.json exists, traj.jsonl is non-empty,
+  and (for opencode) the very first line is not of type 'error'.
+  If traj.jsonl is missing, empty, or starts with an error, the run was interrupted (e.g. rate-limited).
   """
   result_file = workspace / "result.json"
   traj_file = workspace / "traj.jsonl"
   if not result_file.exists() or not traj_file.exists():
     return False
   try:
-    return traj_file.stat().st_size > 0
+    if traj_file.stat().st_size == 0:
+      return False
+    if agent == "opencode":
+      with open(traj_file, "r", encoding="utf-8") as f:
+        first_line = f.readline().strip()
+      if first_line:
+        try:
+          data = json.loads(first_line)
+          if isinstance(data, dict) and data.get("type") == "error":
+            return False
+        except json.JSONDecodeError:
+          return False
+    return True
   except OSError:
     return False
 
@@ -371,8 +384,8 @@ def evaluate_task(
   sample_id = sample["id"]
   sample_result_file = workspace / "result.json"
 
-  # Resume from previous execution only if sample is fully completed (non-empty traj.jsonl)
-  if is_sample_completed(workspace):
+  # Resume from previous execution only if sample is fully completed
+  if is_sample_completed(workspace, agent=agent):
     try:
       with open(sample_result_file, "r", encoding="utf-8") as f:
         cached_result = json.load(f)
@@ -395,6 +408,11 @@ def evaluate_task(
 
   # Setup isolated task workspace
   workspace.mkdir(parents=True, exist_ok=True)
+
+  # Clean up stale answer.py from previous interrupted/failed runs
+  stale_answer = workspace / "answer.py"
+  if stale_answer.exists():
+    stale_answer.unlink()
 
   # Generate code.py with main test block
   code_content = make_code_file(
@@ -654,7 +672,7 @@ def run_evaluation(
         return False
 
       workspace = outdir / sample["id"]
-      is_cached = is_sample_completed(workspace)
+      is_cached = is_sample_completed(workspace, agent=args.agent)
 
       if not is_cached:
         executed_count += 1
