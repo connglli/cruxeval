@@ -191,6 +191,7 @@ def run_agent(
   model: str,
   timeout: int = 300,
   docker_image: str = "cruxeval-agent:latest",
+  opencode_config: str | None = None,
 ) -> int:
   """
   Executes an AI coding agent (OpenCode or Claude Code) in an isolated Docker container
@@ -246,6 +247,15 @@ def run_agent(
     "-w",
     "/workspace",
   ]
+
+  # Mount an OpenCode config file (if provided) into the container's
+  # ~/.config/opencode/opencode.jsonc so the agent starts with the given
+  # configuration (models, providers, MCP servers, permission rules, etc.).
+  if opencode_config:
+    config_src = Path(opencode_config).expanduser().resolve()
+    if not config_src.is_file():
+      raise FileNotFoundError(f"OpenCode config file not found: {config_src}")
+    cmd.extend(["-v", f"{config_src}:/home/runner/.config/opencode/opencode.jsonc:ro"])
 
   # Selectively forward only provider keys, model configs, and agent settings
   for key, val in env.items():
@@ -379,6 +389,7 @@ def evaluate_task(
   timeout: int,
   docker_image: str = "cruxeval-agent:latest",
   verbose: bool = False,
+  opencode_config: str | None = None,
 ) -> dict[str, Any]:
   """Runs a single task with an agent (OpenCode or Claude) in its workspace and evaluates result."""
   sample_id = sample["id"]
@@ -443,6 +454,7 @@ def evaluate_task(
       model=model,
       timeout=timeout,
       docker_image=docker_image,
+      opencode_config=opencode_config,
     )
 
     answer_file_path = workspace / "answer.py"
@@ -580,6 +592,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     help="Docker image for isolated task execution (default: cruxeval-agent:latest)",
   )
   parser.add_argument(
+    "--opencode-config",
+    type=str,
+    default=None,
+    help="Path to an opencode.jsonc config file to mount into the container at "
+    "~/.config/opencode/opencode.jsonc (only used when --agent opencode)",
+  )
+  parser.add_argument(
     "--throttle",
     type=parse_throttle,
     default=None,
@@ -612,6 +631,8 @@ def print_startup_banner(
   print(f"   Agent        : {args.agent}")
   print(f"   Model        : {model}")
   print(f"   Docker Image : {args.docker_image}")
+  if args.opencode_config:
+    print(f"   OC Config    : {args.opencode_config}")
   print(f"   Tasks        : {total_tasks} samples")
   print(f"   Workers      : {args.num_workers} parallel workers")
   print(f"   Timeout      : {args.timeout}s per task")
@@ -693,6 +714,7 @@ def run_evaluation(
         timeout=args.timeout,
         docker_image=args.docker_image,
         verbose=args.verbose,
+        opencode_config=args.opencode_config,
       )
       future_to_sample[future] = sample
       return True

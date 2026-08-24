@@ -28,7 +28,7 @@ RUN npm install -g @anthropic-ai/claude-code opencode-ai
 # Create non-root user matching host UID/GID
 RUN groupadd -g ${GID} runner 2>/dev/null || true \
     && useradd -m -u ${UID} -g ${GID} -s /bin/bash runner \
-    && mkdir -p /workspace \
+    && mkdir -p /workspace /home/runner/.config/opencode \
     && chown -R ${UID}:${GID} /workspace /home/runner
 
 WORKDIR /workspace
